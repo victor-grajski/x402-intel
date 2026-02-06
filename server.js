@@ -1,7 +1,7 @@
 import express from 'express';
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
-import { HTTPFacilitatorClient } from '@x402/core/server';
+import { facilitator } from '@coinbase/x402';
 
 const app = express();
 app.use(express.json());
@@ -9,16 +9,11 @@ app.use(express.json());
 // Configuration via environment variables
 const payTo = process.env.WALLET_ADDRESS || '0x1468B3fa064b44bA184aB34FD9CD9eB34E43f197';
 const BASE_NETWORK = process.env.NETWORK || 'eip155:8453'; // Default to mainnet
-const FACILITATOR_URL = process.env.FACILITATOR_URL || 'https://x402.org/facilitator';
 const MOLTBOOK_API = 'https://www.moltbook.com/api/v1';
 
-// Create facilitator client
-const facilitatorClient = new HTTPFacilitatorClient({
-  url: FACILITATOR_URL
-});
-
+// Use Coinbase's facilitator (reads CDP_API_KEY_ID and CDP_API_KEY_SECRET from env)
 // Create resource server and register EVM scheme
-const server = new x402ResourceServer(facilitatorClient)
+const server = new x402ResourceServer(facilitator)
   .register(BASE_NETWORK, new ExactEvmScheme());
 
 // Route configurations with x402 payment requirements

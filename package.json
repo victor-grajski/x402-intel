@@ -17,6 +17,7 @@
   "author": "SparkOC",
   "license": "MIT",
   "dependencies": {
+    "@coinbase/x402": "^2.1.0",
     "@x402/core": "^2.3.0",
     "@x402/evm": "^2.3.0",
     "@x402/express": "^2.3.0",
