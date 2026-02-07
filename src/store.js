@@ -3,6 +3,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 
+import crypto from 'crypto';
+
 const DATA_DIR = process.env.DATA_DIR || './data';
 
 // File paths
@@ -10,6 +12,7 @@ const OPERATORS_FILE = path.join(DATA_DIR, 'operators.json');
 const WATCHER_TYPES_FILE = path.join(DATA_DIR, 'watcher-types.json');
 const WATCHERS_FILE = path.join(DATA_DIR, 'watchers.json');
 const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
+const RECEIPTS_FILE = path.join(DATA_DIR, 'receipts.json');
 
 // Helpers
 async function ensureDataDir() {
@@ -236,4 +239,60 @@ export async function incrementWatcherTypeStats(typeId, field, amount = 1) {
   data.types[index].stats[field] = 
     (data.types[index].stats[field] || 0) + amount;
   await writeJson(WATCHER_TYPES_FILE, data);
+}
+
+// Receipts - Idempotent fulfillment records
+
+/**
+ * Generate a deterministic hash for idempotency.
+ * Same inputs = same hash = same receipt returned (no duplicate charge)
+ */
+export function generateFulfillmentHash(params) {
+  const normalized = JSON.stringify({
+    typeId: params.typeId,
+    config: params.config,
+    webhook: params.webhook,
+    customerId: params.customerId,
+  }, Object.keys(params).sort());
+  
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 32);
+}
+
+export async function getReceipts(filters = {}) {
+  const data = await readJson(RECEIPTS_FILE, { receipts: [] });
+  let receipts = data.receipts;
+  
+  if (filters.watcherId) {
+    receipts = receipts.filter(r => r.watcherId === filters.watcherId);
+  }
+  if (filters.customerId) {
+    receipts = receipts.filter(r => r.customerId === filters.customerId);
+  }
+  if (filters.fulfillmentHash) {
+    receipts = receipts.filter(r => r.fulfillmentHash === filters.fulfillmentHash);
+  }
+  
+  return receipts;
+}
+
+export async function getReceipt(id) {
+  const receipts = await getReceipts();
+  return receipts.find(r => r.id === id);
+}
+
+export async function getReceiptByHash(fulfillmentHash) {
+  const receipts = await getReceipts({ fulfillmentHash });
+  return receipts[0] || null;
+}
+
+export async function createReceipt(receipt) {
+  const data = await readJson(RECEIPTS_FILE, { receipts: [] });
+  const newReceipt = {
+    id: 'rcpt_' + generateId(),
+    ...receipt,
+    timestamp: new Date().toISOString(),
+  };
+  data.receipts.push(newReceipt);
+  await writeJson(RECEIPTS_FILE, data);
+  return newReceipt;
 }

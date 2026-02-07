@@ -131,8 +131,13 @@ async function initializeApp() {
         'POST /marketplace/types': 'Create a watcher type',
         
         // Customer actions (x402 paid)
-        'POST /api/watchers': 'Create a watcher instance ($0.01+)',
+        'POST /api/watchers': 'Create a watcher instance ($0.01+) - idempotent with receipts',
         'GET /marketplace/watchers/:id': 'Check watcher status',
+        
+        // Receipts (audit trail)
+        'GET /marketplace/receipts': 'List receipts (filter by customerId, watcherId)',
+        'GET /marketplace/receipts/:id': 'Get receipt by ID',
+        'GET /marketplace/receipts/verify/:hash': 'Verify receipt by fulfillment hash',
         
         // Internal
         'POST /api/cron/check': 'Trigger watcher checks (internal)',

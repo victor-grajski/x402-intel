@@ -35,9 +35,14 @@ router.get('/', (req, res) => {
       'POST /marketplace/types': 'Create a watcher type (operators only, free)',
       
       // Customer actions
-      'POST /marketplace/watchers': 'Create a watcher instance (x402 payment)',
+      'POST /marketplace/watchers': 'Create a watcher instance (x402 payment) - idempotent',
       'GET /marketplace/watchers/:id': 'Get watcher status',
       'DELETE /marketplace/watchers/:id': 'Delete a watcher',
+      
+      // Receipts (audit trail)
+      'GET /marketplace/receipts': 'List receipts (filter by customerId, watcherId)',
+      'GET /marketplace/receipts/:id': 'Get receipt by ID',
+      'GET /marketplace/receipts/verify/:hash': 'Verify receipt by fulfillment hash',
     },
   });
 });
@@ -272,6 +277,68 @@ router.get('/watchers', async (req, res) => {
         lastChecked: w.lastChecked,
         createdAt: w.createdAt,
       })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// RECEIPTS (audit trail)
+// ============================================
+
+// List receipts
+router.get('/receipts', async (req, res) => {
+  try {
+    const { customerId, watcherId } = req.query;
+    const receipts = await store.getReceipts({ customerId, watcherId });
+    
+    res.json({
+      count: receipts.length,
+      receipts: receipts.map(r => ({
+        id: r.id,
+        watcherId: r.watcherId,
+        typeId: r.typeId,
+        amount: r.amount,
+        chain: r.chain,
+        rail: r.rail,
+        timestamp: r.timestamp,
+        fulfillmentHash: r.fulfillmentHash,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get single receipt
+router.get('/receipts/:id', async (req, res) => {
+  try {
+    const receipt = await store.getReceipt(req.params.id);
+    if (!receipt) {
+      return res.status(404).json({ error: 'Receipt not found' });
+    }
+    
+    res.json(receipt);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Verify receipt by fulfillment hash
+router.get('/receipts/verify/:hash', async (req, res) => {
+  try {
+    const receipt = await store.getReceiptByHash(req.params.hash);
+    if (!receipt) {
+      return res.status(404).json({ 
+        verified: false, 
+        error: 'No receipt found for this fulfillment hash' 
+      });
+    }
+    
+    res.json({
+      verified: true,
+      receipt,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

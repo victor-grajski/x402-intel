@@ -85,3 +85,21 @@ export const CATEGORIES = [
 // Revenue split
 export const PLATFORM_FEE = 0.20; // 20%
 export const OPERATOR_SHARE = 0.80; // 80%
+
+/**
+ * Receipt - Idempotent record of a fulfilled paid API call
+ * Used for audit trail and preventing duplicate charges
+ */
+export const ReceiptSchema = {
+  id: 'string',              // unique receipt ID
+  watcherId: 'string',       // the watcher that was created
+  typeId: 'string',          // plan_id - which watcher type was purchased
+  amount: 'number',          // amount paid in USD
+  chain: 'string',           // blockchain network (e.g., eip155:8453)
+  rail: 'string',            // payment rail (e.g., x402)
+  timestamp: 'string',       // ISO timestamp of fulfillment
+  fulfillmentHash: 'string', // hash of request params for idempotency
+  customerId: 'string',      // who paid
+  operatorId: 'string',      // who received
+  paymentId: 'string',       // linked payment record
+};

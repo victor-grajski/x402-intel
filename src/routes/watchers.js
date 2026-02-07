@@ -13,10 +13,38 @@ const PLATFORM_WALLET = process.env.PLATFORM_WALLET || process.env.WALLET_ADDRES
 /**
  * Create a watcher instance (x402 protected)
  * Payment goes to: 80% operator, 20% platform
+ * 
+ * IDEMPOTENCY: Same request params return the same receipt without duplicate charges.
+ * The fulfillmentHash is computed from (typeId, config, webhook, customerId).
  */
 router.post('/watchers', async (req, res) => {
   try {
-    const { typeId, config, webhook, customerId } = req.body;
+    const { typeId, config, webhook, customerId: rawCustomerId } = req.body;
+    const customerId = rawCustomerId || req.headers['x-customer-id'] || 'anonymous';
+    
+    // Generate idempotency hash from request params
+    const fulfillmentHash = store.generateFulfillmentHash({ 
+      typeId, config, webhook, customerId 
+    });
+    
+    // Check for existing receipt (idempotency)
+    const existingReceipt = await store.getReceiptByHash(fulfillmentHash);
+    if (existingReceipt) {
+      const existingWatcher = await store.getWatcher(existingReceipt.watcherId);
+      console.log(`🔄 Idempotent request - returning existing receipt ${existingReceipt.id}`);
+      
+      return res.status(200).json({
+        success: true,
+        idempotent: true,
+        watcher: existingWatcher ? {
+          id: existingWatcher.id,
+          typeId: existingWatcher.typeId,
+          status: existingWatcher.status,
+        } : { id: existingReceipt.watcherId },
+        receipt: existingReceipt,
+        message: 'Returning existing receipt (idempotent request)',
+      });
+    }
     
     // Get watcher type
     const type = await store.getWatcherType(typeId);
@@ -53,12 +81,13 @@ router.post('/watchers', async (req, res) => {
     const watcher = await store.createWatcher({
       typeId,
       operatorId: type.operatorId,
-      customerId: customerId || req.headers['x-customer-id'] || 'anonymous',
+      customerId,
       config,
       webhook,
     });
     
     // Record payment (in real implementation, this comes from x402 middleware)
+    const network = process.env.NETWORK || 'eip155:8453';
     const payment = await store.createPayment({
       watcherId: watcher.id,
       operatorId: type.operatorId,
@@ -66,7 +95,20 @@ router.post('/watchers', async (req, res) => {
       amount: type.price,
       operatorShare: type.price * OPERATOR_SHARE,
       platformShare: type.price * PLATFORM_FEE,
-      network: process.env.NETWORK || 'eip155:8453',
+      network,
+    });
+    
+    // Create receipt for audit trail and idempotency
+    const receipt = await store.createReceipt({
+      watcherId: watcher.id,
+      typeId: type.id,
+      amount: type.price,
+      chain: network,
+      rail: 'x402',
+      fulfillmentHash,
+      customerId: watcher.customerId,
+      operatorId: type.operatorId,
+      paymentId: payment.id,
     });
     
     // Update stats
@@ -74,14 +116,17 @@ router.post('/watchers', async (req, res) => {
     await store.incrementWatcherTypeStats(typeId, 'instances');
     
     console.log(`✅ Created watcher ${watcher.id} (type: ${type.name}) for ${watcher.customerId}`);
+    console.log(`📄 Receipt ${receipt.id} issued (hash: ${fulfillmentHash.slice(0, 8)}...)`);
     
     res.status(201).json({
       success: true,
+      idempotent: false,
       watcher: {
         id: watcher.id,
         typeId: watcher.typeId,
         status: watcher.status,
       },
+      receipt,
       payment: {
         amount: payment.amount,
         operatorShare: payment.operatorShare,
