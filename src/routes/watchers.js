@@ -1,9 +1,26 @@
 // Watcher creation (x402 protected) and cron endpoints
 
+/**
+ * CANCELLATION AND REFUND RULES:
+ * - Cancellation stops the next billing cycle for recurring watchers
+ * - No prorated refunds for any usage
+ * - 1-hour grace period: If cancelled within 1 hour of creation AND no webhooks have been fired, 
+ *   the watcher is eligible for a full refund
+ * - Once webhooks have been triggered, no refund is applicable regardless of timing
+ * - Cancelled watchers are excluded from future cron checks
+ */
+
 import { Router } from 'express';
 import * as store from '../store.js';
 import { getExecutor } from '../executors/index.js';
-import { PLATFORM_FEE, OPERATOR_SHARE } from '../models.js';
+import { 
+  PLATFORM_FEE, 
+  OPERATOR_SHARE, 
+  POLLING_INTERVALS, 
+  TTL_OPTIONS, 
+  MAX_RETRIES_LIMIT, 
+  DEFAULT_POLLING 
+} from '../models.js';
 
 const router = Router();
 
@@ -19,7 +36,7 @@ const PLATFORM_WALLET = process.env.PLATFORM_WALLET || process.env.WALLET_ADDRES
  */
 router.post('/watchers', async (req, res) => {
   try {
-    const { typeId, config, webhook, customerId: rawCustomerId } = req.body;
+    const { typeId, config, webhook, customerId: rawCustomerId, billingCycle = 'one-time' } = req.body;
     const customerId = rawCustomerId || req.headers['x-customer-id'] || 'anonymous';
     
     // Generate idempotency hash from request params
@@ -62,6 +79,24 @@ router.post('/watchers', async (req, res) => {
     if (!webhook || !webhook.startsWith('http')) {
       return res.status(400).json({ error: 'Valid webhook URL required' });
     }
+
+    // Validate billing cycle
+    if (!['one-time', 'weekly', 'monthly'].includes(billingCycle)) {
+      return res.status(400).json({ error: 'billingCycle must be "one-time", "weekly", or "monthly"' });
+    }
+
+    // Calculate next billing date for recurring cycles
+    let nextBillingAt = null;
+    if (billingCycle !== 'one-time') {
+      const now = new Date();
+      if (billingCycle === 'weekly') {
+        nextBillingAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      } else if (billingCycle === 'monthly') {
+        const nextMonth = new Date(now);
+        nextMonth.setMonth(now.getMonth() + 1);
+        nextBillingAt = nextMonth.toISOString();
+      }
+    }
     
     // Validate config against executor if available
     if (type.executorId) {
@@ -84,6 +119,8 @@ router.post('/watchers', async (req, res) => {
       customerId,
       config,
       webhook,
+      billingCycle,
+      nextBillingAt,
     });
     
     // Record payment (in real implementation, this comes from x402 middleware)
@@ -141,6 +178,113 @@ router.post('/watchers', async (req, res) => {
 });
 
 /**
+ * Cancel a watcher (DELETE /watchers/:id)
+ * Sets watcher status to "cancelled", records timestamp, stops future billing
+ */
+router.delete('/watchers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body; // optional cancellation reason
+    
+    // Get the watcher
+    const watcher = await store.getWatcher(id);
+    if (!watcher) {
+      return res.status(404).json({ error: 'Watcher not found' });
+    }
+    
+    // Check if already cancelled
+    if (watcher.status === 'cancelled') {
+      return res.status(400).json({ error: 'Watcher is already cancelled' });
+    }
+    
+    // Update watcher status
+    const updatedWatcher = await store.updateWatcher(id, {
+      status: 'cancelled',
+      cancelledAt: new Date().toISOString(),
+      cancellationReason: reason || null,
+      // Clear next billing to stop recurring charges
+      nextBillingAt: null,
+    });
+    
+    console.log(`🚫 Cancelled watcher ${id}${reason ? ` (reason: ${reason})` : ''}`);
+    
+    res.json({
+      success: true,
+      watcher: {
+        id: updatedWatcher.id,
+        status: updatedWatcher.status,
+        cancelledAt: updatedWatcher.cancelledAt,
+        cancellationReason: updatedWatcher.cancellationReason,
+      },
+      message: 'Watcher cancelled successfully. Future billing stopped.',
+    });
+  } catch (error) {
+    console.error('Error cancelling watcher:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Check refund eligibility (GET /watchers/:id/refund-status)
+ * Returns whether a refund is applicable based on timing and usage
+ */
+router.get('/watchers/:id/refund-status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Get the watcher
+    const watcher = await store.getWatcher(id);
+    if (!watcher) {
+      return res.status(404).json({ error: 'Watcher not found' });
+    }
+    
+    // Calculate time since creation
+    const createdAt = new Date(watcher.createdAt);
+    const now = new Date();
+    const hoursSinceCreation = (now - createdAt) / (1000 * 60 * 60);
+    
+    // Check if any webhooks have been fired
+    const hasTriggered = watcher.triggerCount > 0;
+    
+    // Refund rules:
+    // 1. Must be cancelled within 1 hour of creation
+    // 2. No webhooks must have been fired
+    const isWithinGracePeriod = hoursSinceCreation <= 1;
+    const isUnused = !hasTriggered;
+    const isEligible = isWithinGracePeriod && isUnused && watcher.status === 'cancelled';
+    
+    let reason = 'No refund applicable';
+    if (watcher.status !== 'cancelled') {
+      reason = 'Watcher is not cancelled';
+    } else if (!isWithinGracePeriod) {
+      reason = 'Cancelled after 1-hour grace period';
+    } else if (hasTriggered) {
+      reason = 'Webhooks were triggered (usage detected)';
+    } else if (isEligible) {
+      reason = 'Eligible: cancelled within 1 hour with no usage';
+    }
+    
+    res.json({
+      watcherId: watcher.id,
+      status: watcher.status,
+      refundEligible: isEligible,
+      reason,
+      details: {
+        createdAt: watcher.createdAt,
+        cancelledAt: watcher.cancelledAt,
+        hoursSinceCreation: Math.round(hoursSinceCreation * 100) / 100,
+        triggerCount: watcher.triggerCount,
+        isWithinGracePeriod,
+        isUnused,
+      },
+    });
+  } catch (error) {
+    console.error('Error checking refund status:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Cron endpoint - check all active watchers
  */
 router.post('/cron/check', async (req, res) => {
@@ -148,7 +292,9 @@ router.post('/cron/check', async (req, res) => {
   const startTime = Date.now();
   
   try {
-    const watchers = await store.getWatchers({ status: 'active' });
+    // Get all watchers except cancelled ones
+    const allWatchers = await store.getWatchers();
+    const watchers = allWatchers.filter(w => w.status === 'active');
     
     for (const watcher of watchers) {
       try {
@@ -224,6 +370,81 @@ router.post('/cron/check', async (req, res) => {
   } catch (error) {
     console.error('Cron check error:', error);
     res.status(500).json({ error: 'Cron check failed', ...results });
+  }
+});
+
+/**
+ * Get billing status and history for a watcher
+ */
+router.get('/watchers/:id/billing', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const watcher = await store.getWatcher(id);
+    if (!watcher) {
+      return res.status(404).json({ error: 'Watcher not found' });
+    }
+
+    // Get watcher type for pricing info
+    const watcherType = await store.getWatcherType(watcher.typeId);
+    if (!watcherType) {
+      return res.status(500).json({ error: 'Watcher type not found' });
+    }
+
+    // Calculate billing status
+    const now = new Date().toISOString();
+    let billingStatus = 'current';
+    let daysUntilNextBilling = null;
+
+    if (watcher.billingCycle === 'one-time') {
+      billingStatus = 'one-time';
+    } else if (watcher.status === 'suspended') {
+      billingStatus = 'suspended';
+    } else if (watcher.nextBillingAt) {
+      const nextBilling = new Date(watcher.nextBillingAt);
+      const nowDate = new Date(now);
+      
+      if (nextBilling <= nowDate) {
+        billingStatus = 'overdue';
+      } else {
+        billingStatus = 'active';
+        daysUntilNextBilling = Math.ceil((nextBilling - nowDate) / (1000 * 60 * 60 * 24));
+      }
+    }
+
+    // Get payment history for this watcher
+    const payments = await store.getPayments({ watcherId: id });
+
+    res.json({
+      success: true,
+      watcher: {
+        id: watcher.id,
+        status: watcher.status,
+        billingCycle: watcher.billingCycle,
+        nextBillingAt: watcher.nextBillingAt,
+        createdAt: watcher.createdAt,
+      },
+      billing: {
+        status: billingStatus,
+        price: watcherType.price,
+        daysUntilNextBilling,
+        totalBillings: watcher.billingHistory?.length || 0,
+        totalPaid: payments.reduce((sum, p) => sum + p.amount, 0),
+      },
+      history: {
+        billingRecords: watcher.billingHistory || [],
+        payments: payments.map(p => ({
+          id: p.id,
+          amount: p.amount,
+          createdAt: p.createdAt,
+          network: p.network,
+          txHash: p.txHash,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching billing info:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

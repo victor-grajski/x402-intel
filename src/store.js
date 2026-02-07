@@ -13,6 +13,7 @@ const WATCHER_TYPES_FILE = path.join(DATA_DIR, 'watcher-types.json');
 const WATCHERS_FILE = path.join(DATA_DIR, 'watchers.json');
 const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
 const RECEIPTS_FILE = path.join(DATA_DIR, 'receipts.json');
+const CUSTOMERS_FILE = path.join(DATA_DIR, 'customers.json');
 
 // Helpers
 async function ensureDataDir() {
@@ -161,14 +162,29 @@ export async function getWatcher(id) {
 
 export async function createWatcher(watcher) {
   const data = await readJson(WATCHERS_FILE, { watchers: [] });
+  
+  // Calculate expiresAt from ttl if provided
+  let expiresAt = null;
+  if (watcher.ttl && watcher.ttl > 0) {
+    const expiryDate = new Date();
+    expiryDate.setHours(expiryDate.getHours() + watcher.ttl);
+    expiresAt = expiryDate.toISOString();
+  }
+  
   const newWatcher = {
     id: generateId(),
     ...watcher,
     status: 'active',
     createdAt: new Date().toISOString(),
+    expiresAt: expiresAt,
     lastChecked: null,
     lastTriggered: null,
     triggerCount: 0,
+    billingCycle: watcher.billingCycle || 'one-time',
+    nextBillingAt: watcher.nextBillingAt || null,
+    billingHistory: [],
+    cancelledAt: null,
+    cancellationReason: null,
   };
   data.watchers.push(newWatcher);
   await writeJson(WATCHERS_FILE, data);
@@ -239,6 +255,60 @@ export async function incrementWatcherTypeStats(typeId, field, amount = 1) {
   data.types[index].stats[field] = 
     (data.types[index].stats[field] || 0) + amount;
   await writeJson(WATCHER_TYPES_FILE, data);
+}
+
+// Customers
+export async function getCustomers(filters = {}) {
+  const data = await readJson(CUSTOMERS_FILE, { customers: [] });
+  let customers = data.customers;
+  
+  if (filters.tier) {
+    customers = customers.filter(c => c.tier === filters.tier);
+  }
+  
+  return customers;
+}
+
+export async function getCustomer(id) {
+  const customers = await getCustomers();
+  return customers.find(c => c.id === id);
+}
+
+export async function createCustomer(customer) {
+  const data = await readJson(CUSTOMERS_FILE, { customers: [] });
+  const newCustomer = {
+    id: customer.id,
+    tier: customer.tier || 'free',
+    freeWatchersUsed: customer.freeWatchersUsed || 0,
+    createdAt: new Date().toISOString(),
+    upgradedAt: customer.tier === 'paid' ? new Date().toISOString() : null,
+    stats: {
+      totalWatchersCreated: 0,
+      totalSpent: 0,
+    },
+  };
+  data.customers.push(newCustomer);
+  await writeJson(CUSTOMERS_FILE, data);
+  return newCustomer;
+}
+
+export async function updateCustomer(id, updates) {
+  const data = await readJson(CUSTOMERS_FILE, { customers: [] });
+  const index = data.customers.findIndex(c => c.id === id);
+  if (index === -1) return null;
+  data.customers[index] = { ...data.customers[index], ...updates };
+  await writeJson(CUSTOMERS_FILE, data);
+  return data.customers[index];
+}
+
+export async function incrementCustomerStats(customerId, field, amount = 1) {
+  const data = await readJson(CUSTOMERS_FILE, { customers: [] });
+  const index = data.customers.findIndex(c => c.id === customerId);
+  if (index === -1) return;
+  
+  data.customers[index].stats[field] = 
+    (data.customers[index].stats[field] || 0) + amount;
+  await writeJson(CUSTOMERS_FILE, data);
 }
 
 // Receipts - Idempotent fulfillment records

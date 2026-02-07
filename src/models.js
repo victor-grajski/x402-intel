@@ -48,12 +48,22 @@ export const WatcherSchema = {
   customerId: 'string',   // who paid for it (wallet or agent ID)
   config: 'object',       // type-specific configuration
   webhook: 'string',      // where to send alerts
-  status: 'string',       // active, paused, expired
+  status: 'string',       // active, paused, expired, suspended, cancelled
   createdAt: 'string',
   expiresAt: 'string?',   // optional expiry
   lastChecked: 'string?',
   lastTriggered: 'string?',
   triggerCount: 'number',
+  billingCycle: 'string', // "one-time" | "weekly" | "monthly"
+  nextBillingAt: 'string?', // timestamp for next billing (null for one-time)
+  billingHistory: 'array', // array of billing records
+  cancelledAt: 'string?', // timestamp when cancelled
+  cancellationReason: 'string?', // optional reason for cancellation
+  // Configurable polling options
+  pollingInterval: 'number', // minutes between checks (5, 15, 30, 60)
+  ttl: 'number?',         // hours until expiry (24, 72, 168, null)
+  retryPolicy: 'object',  // { maxRetries: number, backoffMs: number }
+  tier: 'string?'         // "free" | "paid" - indicates tier when created
 };
 
 /**
@@ -86,6 +96,40 @@ export const CATEGORIES = [
 export const PLATFORM_FEE = 0.20; // 20%
 export const OPERATOR_SHARE = 0.80; // 80%
 
+// Free tier constants
+export const FREE_TIER = {
+  MAX_WATCHERS: 1,           // free tier can create max 1 watcher
+  POLLING_INTERVAL_MIN: 30,  // minimum 30-minute polling interval for free tier
+  UPGRADE_PROMPT: 'Free tier limited to 1 watcher. Upgrade to paid tier for unlimited watchers and faster polling.',
+};
+
+// Polling configuration options
+export const POLLING_INTERVALS = [5, 15, 30, 60]; // minutes
+export const TTL_OPTIONS = [24, 72, 168, null]; // hours (null = no expiry)
+export const MAX_RETRIES_LIMIT = 5;
+
+// Default polling configuration
+export const DEFAULT_POLLING = {
+  pollingInterval: 5,
+  ttl: null,
+  retryPolicy: { maxRetries: 3, backoffMs: 1000 }
+};
+
+/**
+ * Customer - User accounts with tier management
+ */
+export const CustomerSchema = {
+  id: 'string',              // unique customer ID (typically wallet address or agent ID)
+  tier: 'string',            // "free" | "paid"
+  freeWatchersUsed: 'number', // count of free watchers created (max 1 for free tier)
+  createdAt: 'string',       // ISO timestamp
+  upgradedAt: 'string?',     // when upgraded to paid (null for free tier)
+  stats: {
+    totalWatchersCreated: 'number',
+    totalSpent: 'number',    // in USD
+  },
+};
+
 /**
  * Receipt - Idempotent record of a fulfilled paid API call
  * Used for audit trail and preventing duplicate charges
@@ -102,4 +146,17 @@ export const ReceiptSchema = {
   customerId: 'string',      // who paid
   operatorId: 'string',      // who received
   paymentId: 'string',       // linked payment record
+};
+
+/**
+ * BillingRecord - Individual billing event in a watcher's history
+ */
+export const BillingRecordSchema = {
+  id: 'string',              // unique billing record ID
+  billingDate: 'string',     // when this billing was due
+  processedAt: 'string',     // when billing was actually processed
+  amount: 'number',          // amount charged
+  status: 'string',          // 'success', 'failed', 'suspended'
+  paymentId: 'string?',      // linked payment record (if successful)
+  failureReason: 'string?',  // error message if failed
 };
