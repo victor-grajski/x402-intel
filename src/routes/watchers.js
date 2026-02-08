@@ -138,10 +138,32 @@ async function createSingleWatcher(config) {
     webhook, 
     customerId,
     billingCycle = 'one-time',
-    pollingInterval = DEFAULT_POLLING.pollingInterval,
+    pollingInterval: rawPollingInterval,
+    intervalMs,
+    checkInterval,
     ttl = DEFAULT_POLLING.ttl,
     retryPolicy = DEFAULT_POLLING.retryPolicy
   } = config;
+  
+  // Support intervalMs and checkInterval as aliases for pollingInterval
+  // intervalMs: milliseconds between checks (converted to minutes)
+  // checkInterval: minutes between checks (same as pollingInterval)
+  // Priority: pollingInterval > intervalMs > checkInterval > default
+  let pollingInterval;
+  if (rawPollingInterval != null) {
+    pollingInterval = rawPollingInterval;
+  } else if (intervalMs != null) {
+    pollingInterval = Math.round(intervalMs / 60000);
+    // Snap to nearest valid interval
+    const closest = POLLING_INTERVALS.reduce((prev, curr) =>
+      Math.abs(curr - pollingInterval) < Math.abs(prev - pollingInterval) ? curr : prev
+    );
+    pollingInterval = closest;
+  } else if (checkInterval != null) {
+    pollingInterval = checkInterval;
+  } else {
+    pollingInterval = DEFAULT_POLLING.pollingInterval;
+  }
   
   // Validate polling configuration
   if (!POLLING_INTERVALS.includes(pollingInterval)) {
@@ -319,7 +341,9 @@ router.post('/watchers', async (req, res) => {
       webhook, 
       customerId: rawCustomerId, 
       billingCycle = 'one-time',
-      pollingInterval = DEFAULT_POLLING.pollingInterval,
+      pollingInterval,
+      intervalMs,
+      checkInterval,
       ttl = DEFAULT_POLLING.ttl,
       retryPolicy = DEFAULT_POLLING.retryPolicy
     } = req.body;
@@ -333,6 +357,8 @@ router.post('/watchers', async (req, res) => {
       customerId,
       billingCycle,
       pollingInterval,
+      intervalMs,
+      checkInterval,
       ttl,
       retryPolicy
     });

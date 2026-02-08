@@ -169,7 +169,7 @@ curl -X POST https://your-sentinel.app/marketplace/types \
 ### Create a Watcher Instance (x402)
 
 ```bash
-# Single watcher
+# Single watcher with custom check interval
 curl -X POST https://your-sentinel.app/api/watchers \
   -H "Content-Type: application/json" \
   -d '{
@@ -179,8 +179,15 @@ curl -X POST https://your-sentinel.app/api/watchers \
       "threshold": 100,
       "direction": "below"
     },
-    "webhook": "https://myagent.app/webhook"
+    "webhook": "https://myagent.app/webhook",
+    "pollingInterval": 15
   }'
+
+# Interval options (all equivalent ways to set check frequency):
+#   "pollingInterval": 15          — minutes (5, 15, 30, 60)
+#   "intervalMs": 900000           — milliseconds (snaps to nearest valid)
+#   "checkInterval": 15            — alias for pollingInterval
+# Default: 5 minutes. Free tier minimum: 30 minutes.
 ```
 
 ### Create Multiple Watchers (Batch API)
